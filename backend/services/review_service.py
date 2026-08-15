@@ -27,6 +27,8 @@ diff feed them ground truth so every finding stays citable.
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from pathlib import Path
 
 from . import git_service
@@ -40,6 +42,7 @@ from ..agents import (
     stubs,
 )
 from ..agents.review_agents import REVIEW_AGENTS
+from ..tools import run_all_tools, partition_by_axis
 
 
 def compare(repo_path: Path, base: str, compare_branch: str) -> dict:
@@ -122,14 +125,46 @@ def run_agents_on_stubs(
 # Not yet implemented — the remaining Phase B seams. Kept explicit so the shape
 # of the pipeline is visible and callers won't need to change.
 # --------------------------------------------------------------------------- #
-def run_tools(repo_path: Path, changed_files: list[dict]) -> dict:
-    """Run the deterministic analysers on the full changed files (Design §5)."""
-    raise NotImplementedError("Phase B tool layer not yet implemented (Design §5).")
+
+ANALYSABLE_SUFFIXES = {".py"}
+
+def run_tools(repo_path, compare_branch, changed_files, *, logger=None):
+    """Materialise compare-branch content of changed source files and analyse them."""
+    to_fetch = [
+        f["path"] for f in changed_files
+        if f.get("status") != "D" and f.get("path")
+        and Path(f["path"]).suffix in ANALYSABLE_SUFFIXES
+    ]
+    if not to_fetch:
+        return []
+    tmp = Path(tempfile.mkdtemp(prefix="scr-review-"))
+    try:
+        materialised = []
+        for path in to_fetch:
+            content = git_service.file_content_at(repo_path, compare_branch, path)
+            if content is None:
+                continue
+            dest = tmp / path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+            materialised.append(dest)
+        return run_all_tools(materialised, tmp, logger=logger) if materialised else []
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
-def build_evidence_bundle(tool_findings: dict) -> EvidenceBundle:
-    """Partition tool findings by axis so the agents can't overlap (Design §5)."""
-    raise NotImplementedError("Evidence partitioning not yet implemented (Design §5).")
+def build_evidence_bundle(findings):
+    return partition_by_axis(findings)
+
+
+def run_review(repo_path, base, compare_branch, project_map, *,
+               drift=None, logger=None, language="Python", **agent_kwargs):
+    """Full Phase B flow: diff -> tools -> evidence -> agents."""
+    diff = compare(repo_path, base, compare_branch)
+    findings = run_tools(repo_path, compare_branch, diff["changed_files"], logger=logger)
+    bundle = build_evidence_bundle(findings)
+    return run_agents(bundle, project_map, drift=drift, logger=logger,
+                      language=language, **agent_kwargs)
 
 
 def run_drift_check(diff: str, project_map: ProjectMap) -> list[DriftFinding]:
