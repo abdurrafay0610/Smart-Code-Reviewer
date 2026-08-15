@@ -175,3 +175,10 @@ def diff_branches(repo: Path, base: str, compare: str) -> dict:
         "changed_files": changed_files,
         "diff": patch,
     }
+
+def file_content_at(repo: Path, branch: str, path: str) -> str | None:
+    """Text of `path` as it exists on the compare branch, or None if absent."""
+    try:
+        return _run(["show", f"{_ref(branch)}:{path}"], cwd=repo)
+    except GitError:
+        return None
