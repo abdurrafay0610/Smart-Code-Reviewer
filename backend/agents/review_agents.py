@@ -91,7 +91,7 @@ class ReviewAgent(BaseAgent[ReviewInput, AgentResult]):
         )
 
         return (
-            f"You are a senior C++ engineer writing the {self.AXIS.upper()} section "
+            f"You are a senior software engineer writing the {self.AXIS.upper()} section "
             "of an automated pre-review, before a human opens a pull request.\n\n"
             "You are given, as JSON:\n"
             "  1. project_map — prose describing how this codebase is meant to fit "
@@ -324,3 +324,7 @@ REVIEW_AGENTS: dict[Axis, type[ReviewAgent]] = {
     "structure": StructureAgent,
     "maintainability": MaintainabilityAgent,
 }
+
+def __init__(self, *, language: str = "", **kwargs):
+    self.language = language
+    super().__init__(**kwargs)
