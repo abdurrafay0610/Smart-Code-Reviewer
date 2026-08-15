@@ -7,12 +7,15 @@ here is the real one, so wiring the actual "climb" later needs no API change.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from ..models import MAP_BUILDING, MAP_BUILT, MAP_NOT_BUILT
 
 from ..models import MAP_BUILT
 from ..services import map_service
 from ..storage import store
 from .common import get_record_or_404
+
+
 
 router = APIRouter(prefix="/projects/{project_id}/map", tags=["map"])
 
@@ -29,13 +32,12 @@ def get_map(project_id: str) -> dict:
 
 @router.post("")
 def build_map(project_id: str) -> dict:
-    """
-    Build (currently: scaffold) the project map and mark the project as built.
-
-    Replace ``map_service.build_map`` with the real engine (Design §7.2) — this
-    endpoint and the stored ``map_status`` transition stay the same.
-    """
     record = get_record_or_404(project_id)
-    project_map = map_service.build_map(record)
+    store.update(project_id, map_status=MAP_BUILDING)
+    try:
+        project_map = map_service.build_map(record)
+    except Exception as exc:
+        store.update(project_id, map_status=MAP_NOT_BUILT)
+        raise HTTPException(status_code=502, detail=f"Map build failed: {exc}")
     store.update(project_id, map_status=MAP_BUILT)
     return {"status": "built", "map": project_map}

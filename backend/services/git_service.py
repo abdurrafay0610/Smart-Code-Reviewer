@@ -182,3 +182,16 @@ def file_content_at(repo: Path, branch: str, path: str) -> str | None:
         return _run(["show", f"{_ref(branch)}:{path}"], cwd=repo)
     except GitError:
         return None
+
+# --------------------------------------------------------------------------- #
+# File tree (rung 1 of the map climb — Design §7.2)
+# --------------------------------------------------------------------------- #
+def list_files(repo: Path) -> list[str]:
+    """Every tracked file, repo-relative — the deterministic file tree.
+
+    ``git ls-files`` lists exactly what git tracks on the checked-out branch
+    (the clone's default branch, which is the side the map is built from).
+    Ignored files never appear, so no extra filtering is needed.
+    """
+    out = _run(["ls-files"], cwd=repo)
+    return [line for line in out.splitlines() if line]
