@@ -64,6 +64,10 @@ function cacheEls() {
     fileSummary: document.getElementById("fileSummary"),
     diffView: document.getElementById("diffView"),
     diffEmpty: document.getElementById("diffEmpty"),
+    reviewPanel: document.getElementById("reviewPanel"),
+    reviewBtn: document.getElementById("reviewBtn"),
+    reviewError: document.getElementById("reviewError"),
+    reviewResults: document.getElementById("reviewResults"),
 
     toast: document.getElementById("toast"),
   };
@@ -404,6 +408,9 @@ async function enterReview() {
   renderContextBar(els.reviewContext);
   hide(els.resultPanel);
   hide(els.compareError);
+  hide(els.reviewPanel);
+  hide(els.reviewError);
+  els.reviewResults.innerHTML = "";
 
   if (!state.branches) {
     els.baseSelect.innerHTML = `<option>Loading…</option>`;
@@ -465,8 +472,16 @@ async function runCompare() {
     state.hasCompared = true;
     renderCompareResult(result);
     setStages();
+
+    // Reveal the AI-review step for this comparison.
+    state.lastCompare = { base, compare };
+    els.reviewResults.innerHTML = "";
+    els.reviewBtn.textContent = "Run AI review";
+    hide(els.reviewError);
+    result.changed_files.length ? show(els.reviewPanel) : hide(els.reviewPanel);
   } catch (err) {
     hide(els.resultPanel);
+    hide(els.reviewPanel);
     showError(els.compareError, err.message);
   } finally {
     busy(els.compareBtn, false);
@@ -632,6 +647,7 @@ function bindEvents() {
   els.projectList.addEventListener("click", onProjectListClick);
   els.changeProjectBtn.addEventListener("click", () => showView("projects"));
   els.compareBtn.addEventListener("click", runCompare);
+  els.reviewBtn.addEventListener("click", runReview);
 
   els.stages.addEventListener("click", (e) => {
     const btn = e.target.closest(".stage");
@@ -649,3 +665,253 @@ async function init() {
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+/* ========================================================================== *
+ *  AI review (Design section 6 + section 9)
+ *  Appended to app.js. Runs the tools -> agents pipeline via POST /review and
+ *  renders the Overview + per-axis tabs. Function declarations are hoisted, so
+ *  this block can live at the end of the file.
+ * ========================================================================== */
+
+const AXIS_LABEL = {
+  readability: "Readability",
+  structure: "Structure",
+  maintainability: "Maintainability",
+};
+
+async function runReview() {
+  if (!state.lastCompare) return;
+  const { base, compare } = state.lastCompare;
+  hide(els.reviewError);
+  els.reviewResults.innerHTML = reviewLoadingHTML();
+  busy(els.reviewBtn, true);
+  try {
+    const result = await API.review(state.active.id, base, compare);
+    renderReview(result);
+    els.reviewBtn.textContent = "Re-run AI review";
+  } catch (err) {
+    els.reviewResults.innerHTML = "";
+    showError(els.reviewError, err.message);
+  } finally {
+    busy(els.reviewBtn, false);
+  }
+}
+
+function reviewLoadingHTML() {
+  return `<div class="review-loading">
+      <span class="review-loading__spinner" aria-hidden="true"></span>
+      <span>Running the three review agents — one model call per axis. This can take a moment.</span>
+    </div>`;
+}
+
+function renderReview(result) {
+  els.reviewResults.innerHTML = "";
+
+  const tabs = [
+    { id: "overview", label: "Overview", count: result.finding_count },
+    ...result.axes.map((a) => ({
+      id: a.axis,
+      label: AXIS_LABEL[a.axis] || a.axis,
+      count: a.abstained && !a.findings.length ? null : a.findings.length,
+    })),
+  ];
+
+  const tabBar = document.createElement("div");
+  tabBar.className = "review-tabs";
+  tabBar.setAttribute("role", "tablist");
+
+  const panelWrap = document.createElement("div");
+
+  const panels = {
+    overview: overviewPanel(result),
+    ...Object.fromEntries(result.axes.map((a) => [a.axis, axisPanel(a)])),
+  };
+
+  function activate(id) {
+    tabBar.querySelectorAll(".review-tab").forEach((t) =>
+      t.classList.toggle("is-active", t.dataset.tab === id)
+    );
+    Object.entries(panels).forEach(([pid, panel]) => {
+      panel.hidden = pid !== id;
+    });
+  }
+
+  for (const t of tabs) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "review-tab";
+    btn.dataset.tab = t.id;
+    btn.setAttribute("role", "tab");
+    const label = document.createElement("span");
+    label.textContent = t.label;
+    btn.appendChild(label);
+    if (t.count !== null && t.count !== undefined) {
+      const c = document.createElement("span");
+      c.className = "review-tab__count";
+      c.textContent = String(t.count);
+      btn.appendChild(c);
+    }
+    btn.addEventListener("click", () => activate(t.id));
+    tabBar.appendChild(btn);
+  }
+
+  els.reviewResults.appendChild(tabBar);
+  for (const panel of Object.values(panels)) panelWrap.appendChild(panel);
+  els.reviewResults.appendChild(panelWrap);
+
+  activate("overview");
+}
+
+function overviewPanel(result) {
+  const panel = document.createElement("section");
+  panel.className = "review-panel";
+  panel.dataset.tab = "overview";
+
+  const sev = { high: 0, medium: 0, low: 0, info: 0 };
+  for (const a of result.axes)
+    for (const f of a.findings) sev[f.severity] = (sev[f.severity] || 0) + 1;
+
+  const allAbstained = result.axes.every((a) => a.abstained && !a.findings.length);
+
+  const lead = document.createElement("p");
+  lead.className = "review-lead";
+  lead.textContent = allAbstained
+    ? "No concerns surfaced — all three agents abstained on the provided evidence."
+    : `${result.finding_count} finding${result.finding_count === 1 ? "" : "s"} across ${result.axes.length} axes.`;
+  panel.appendChild(lead);
+
+  if (!allAbstained) {
+    const chips = document.createElement("div");
+    chips.className = "sev-summary";
+    for (const level of ["high", "medium", "low", "info"]) {
+      if (!sev[level]) continue;
+      const chip = sevChip(level);
+      chip.classList.add("sev--pill");
+      chip.textContent = `${sev[level]} ${level}`;
+      chips.appendChild(chip);
+    }
+    panel.appendChild(chips);
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "overview-grid";
+  for (const a of result.axes) {
+    const card = document.createElement("div");
+    card.className = "overview-card";
+    const clean = a.abstained && !a.findings.length;
+    card.innerHTML = `
+      <div class="overview-card__head">
+        <span class="overview-card__axis"></span>
+        <span class="overview-card__count ${clean ? "is-clean" : ""}"></span>
+      </div>
+      <div class="overview-card__summary"></div>`;
+    card.querySelector(".overview-card__axis").textContent =
+      AXIS_LABEL[a.axis] || a.axis;
+    card.querySelector(".overview-card__count").textContent = clean
+      ? "clean"
+      : `${a.findings.length} finding${a.findings.length === 1 ? "" : "s"}`;
+    card.querySelector(".overview-card__summary").textContent = a.summary;
+    grid.appendChild(card);
+  }
+  panel.appendChild(grid);
+
+  panel.appendChild(reviewMeta(result));
+  return panel;
+}
+
+function axisPanel(a) {
+  const panel = document.createElement("section");
+  panel.className = "review-panel";
+  panel.dataset.tab = a.axis;
+
+  const summary = document.createElement("p");
+  summary.className = "axis-summary";
+  summary.textContent = a.summary;
+  panel.appendChild(summary);
+
+  if (a.abstained && !a.findings.length) {
+    const abstain = document.createElement("div");
+    abstain.className = "review-abstain";
+    abstain.innerHTML = `<span class="review-abstain__glyph">✓</span><span></span>`;
+    abstain.querySelector("span:last-child").textContent = `No ${AXIS_LABEL[a.axis] ? AXIS_LABEL[a.axis].toLowerCase() : a.axis} concerns found in the evidence.`;
+    panel.appendChild(abstain);
+  } else {
+    const order = { high: 0, medium: 1, low: 2, info: 3 };
+    const sorted = [...a.findings].sort(
+      (x, y) => (order[x.severity] ?? 9) - (order[y.severity] ?? 9)
+    );
+    for (const f of sorted) panel.appendChild(findingEl(f));
+  }
+
+  panel.appendChild(reviewMeta({ total_tokens: a.total_tokens, model: a.model }));
+  return panel;
+}
+
+function findingEl(f) {
+  const el = document.createElement("article");
+  el.className = "finding";
+  el.dataset.sev = f.severity;
+
+  const head = document.createElement("div");
+  head.className = "finding__head";
+  head.appendChild(sevChip(f.severity));
+  const title = document.createElement("span");
+  title.className = "finding__title";
+  title.textContent = f.title;
+  head.appendChild(title);
+  el.appendChild(head);
+
+  if (f.detail) {
+    const detail = document.createElement("p");
+    detail.className = "finding__detail";
+    detail.textContent = f.detail;
+    el.appendChild(detail);
+  }
+
+  if (f.citations && f.citations.length) {
+    const cites = document.createElement("div");
+    cites.className = "finding__cites";
+    const label = document.createElement("span");
+    label.className = "finding__cites-label";
+    label.textContent = "cited";
+    cites.appendChild(label);
+    for (const c of f.citations) {
+      const chip = document.createElement("span");
+      chip.className = "cite";
+      chip.textContent = c;
+      cites.appendChild(chip);
+    }
+    el.appendChild(cites);
+  }
+
+  if (f.suggestion) {
+    const sug = document.createElement("div");
+    sug.className = "finding__suggestion";
+    const label = document.createElement("span");
+    label.className = "finding__suggestion-label";
+    label.textContent = "Suggestion";
+    const text = document.createElement("span");
+    text.textContent = f.suggestion;
+    sug.append(label, text);
+    el.appendChild(sug);
+  }
+
+  return el;
+}
+
+function sevChip(severity) {
+  const chip = document.createElement("span");
+  chip.className = `sev sev--${severity}`;
+  chip.textContent = severity;
+  return chip;
+}
+
+function reviewMeta(result) {
+  const meta = document.createElement("div");
+  meta.className = "review-meta";
+  const bits = [];
+  if (result.model) bits.push(result.model);
+  if (result.total_tokens) bits.push(`${result.total_tokens.toLocaleString()} tokens`);
+  meta.textContent = bits.join(" · ");
+  return meta;
+}

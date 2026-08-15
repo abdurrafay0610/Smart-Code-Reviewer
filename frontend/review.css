@@ -1,0 +1,270 @@
+/* ============================================================================
+   AI review — Overview + per-axis tabs (Design section 9)
+   Additive stylesheet; reuses the tokens defined in styles.css :root.
+   ========================================================================== */
+
+/* -------------------------------- tabs ---------------------------------- */
+.review-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 18px;
+}
+.review-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 13.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.review-tab:hover {
+  color: var(--ink-soft);
+}
+.review-tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--primary);
+}
+.review-tab__count {
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--hairline);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+.review-tab.is-active .review-tab__count {
+  background: var(--primary-weak);
+  border-color: #cdd8ff;
+  color: var(--primary-ink);
+}
+
+/* ------------------------------- panels --------------------------------- */
+.review-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.review-panel[hidden] {
+  display: none;
+}
+.review-lead,
+.axis-summary {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+/* --------------------------- severity chips ----------------------------- */
+.sev {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.sev--high {
+  background: var(--danger-weak);
+  color: var(--danger);
+}
+.sev--medium {
+  background: var(--pending-weak);
+  color: var(--pending);
+}
+.sev--low {
+  background: var(--primary-weak);
+  color: var(--primary-ink);
+}
+.sev--info {
+  background: var(--surface-sunken);
+  color: var(--muted);
+}
+.sev--pill {
+  text-transform: none;
+}
+.sev-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* --------------------------- overview cards ----------------------------- */
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+.overview-card {
+  padding: 14px 16px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.overview-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.overview-card__axis {
+  font-weight: 600;
+  font-size: 14px;
+}
+.overview-card__count {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.overview-card__count.is-clean {
+  color: var(--verified);
+}
+.overview-card__summary {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* --------------------------- finding cards ------------------------------ */
+.finding {
+  padding: 14px 16px;
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.finding[data-sev="high"] {
+  border-left-color: var(--danger);
+}
+.finding[data-sev="medium"] {
+  border-left-color: var(--pending);
+}
+.finding[data-sev="low"] {
+  border-left-color: var(--primary);
+}
+.finding[data-sev="info"] {
+  border-left-color: var(--hairline-strong);
+}
+.finding__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.finding__title {
+  font-weight: 600;
+  font-size: 14.5px;
+}
+.finding__detail {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+.finding__cites {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+.finding__cites-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-right: 2px;
+}
+.cite {
+  padding: 2px 7px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--surface-sunken);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.finding__suggestion {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--primary);
+  border-radius: 6px;
+  background: var(--primary-weak);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.finding__suggestion-label {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--primary-ink);
+  padding-top: 1px;
+}
+
+/* ------------------------------ abstained ------------------------------- */
+.review-abstain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--radius-sm);
+  background: var(--verified-weak);
+  border: 1px solid #bfe6d6;
+  color: var(--verified);
+  font-size: 13.5px;
+}
+.review-abstain__glyph {
+  font-weight: 700;
+}
+
+/* ------------------------------- meta ----------------------------------- */
+.review-meta {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: right;
+}
+
+/* ------------------------------ loading --------------------------------- */
+.review-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 22px 4px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.review-loading__spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--hairline-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}

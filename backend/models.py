@@ -79,3 +79,31 @@ class CompareResult(BaseModel):
     stats: DiffStats
     changed_files: list[ChangedFile]
     diff: str  # the raw unified patch, rendered client-side
+
+class ReviewFinding(BaseModel):
+    """One reviewer-style finding from an agent (Design §6)."""
+    title: str
+    detail: str = ""
+    severity: str = "info"  # info | low | medium | high
+    citations: list[str] = Field(default_factory=list)
+    suggestion: Optional[str] = None
+
+
+class AxisReview(BaseModel):
+    """One axis's agent result (Design §6, §9)."""
+    axis: str  # readability | structure | maintainability
+    summary: str
+    abstained: bool
+    findings: list[ReviewFinding]
+    model: Optional[str] = None
+    total_tokens: Optional[int] = None
+
+
+class ReviewResult(BaseModel):
+    """The full AI review returned by POST /review."""
+    base: str
+    compare: str
+    language: str
+    axes: list[AxisReview]
+    finding_count: int
+    total_tokens: int

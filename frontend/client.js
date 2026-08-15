@@ -46,5 +46,7 @@ const API = (() => {
     listBranches: (id) => request("GET", `/projects/${id}/branches`),
     compare: (id, base, compare) =>
       request("POST", `/projects/${id}/compare`, { base, compare }),
+    review: (id, base, compare) =>
+      request("POST", `/projects/${id}/review`, { base, compare }),
   };
 })();

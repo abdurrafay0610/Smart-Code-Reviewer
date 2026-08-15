@@ -11,6 +11,7 @@
     rel="stylesheet"
   />
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="review.css" />
 </head>
 <body>
   <div class="app">
@@ -176,6 +177,22 @@
               <p class="empty__text">These branches are identical since their merge-base.</p>
             </div>
           </div>
+
+          <div class="panel" id="reviewPanel" hidden>
+            <div class="panel__head panel__head--row">
+              <div>
+                <h2 class="panel__title">AI review</h2>
+                <p class="panel__hint">
+                  Three specialist agents interpret the deterministic findings — one per axis.
+                  Every finding is grounded in a tool result; nothing is invented.
+                </p>
+              </div>
+              <button class="btn btn--primary" id="reviewBtn" type="button">Run AI review</button>
+            </div>
+            <p class="form-error" id="reviewError" hidden></p>
+            <div id="reviewResults"></div>
+          </div>
+
         </section>
       </div>
     </main>
