@@ -22,6 +22,7 @@ DATA_DIR = BASE_DIR / "data"
 REPOS_DIR = DATA_DIR / "repos"
 MAPS_DIR = DATA_DIR / "maps"
 REGISTRY_FILE = DATA_DIR / "registry.json"
+BIN_DIR = BASE_DIR / "bin"
 
 # Guard rails for the deterministic git layer.
 GIT_CLONE_TIMEOUT = 300  # seconds; large repos take a while to clone
