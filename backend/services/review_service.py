@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import git_service
+from backend.services import git_service
 
 
 def compare(repo_path: Path, base: str, compare_branch: str) -> dict:
