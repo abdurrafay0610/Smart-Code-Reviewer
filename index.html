@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Code Reviewer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- ============================ PIPELINE RAIL ============================ -->
+    <aside class="rail">
+      <div class="brand">
+        <div class="brand__mark">SCR</div>
+        <div class="brand__text">
+          <div class="brand__name">Smart Code Reviewer</div>
+          <div class="brand__tag">C++ pre-review</div>
+        </div>
+      </div>
+
+      <nav class="stages" id="stages" aria-label="Workflow stages">
+        <button class="stage" data-stage="projects" type="button">
+          <span class="stage__node">
+            <span class="stage__num">1</span>
+            <svg class="stage__check" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="stage__body">
+            <span class="stage__name">Connect</span>
+            <span class="stage__sub">Pick or add a repo</span>
+          </span>
+        </button>
+
+        <button class="stage" data-stage="map" type="button">
+          <span class="stage__node">
+            <span class="stage__num">2</span>
+            <svg class="stage__check" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="stage__body">
+            <span class="stage__name">Map</span>
+            <span class="stage__sub">Build the project map</span>
+          </span>
+        </button>
+
+        <button class="stage" data-stage="review" type="button">
+          <span class="stage__node">
+            <span class="stage__num">3</span>
+            <svg class="stage__check" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="stage__body">
+            <span class="stage__name">Review</span>
+            <span class="stage__sub">Compare two branches</span>
+          </span>
+        </button>
+      </nav>
+
+      <div class="rail__foot">
+        <div class="active-project" id="activeProject" hidden>
+          <span class="active-project__label">Active project</span>
+          <span class="active-project__name mono" id="activeProjectName">—</span>
+          <button class="active-project__change" id="changeProjectBtn" type="button">Change</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ================================ MAIN ================================ -->
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar__eyebrow mono" id="viewEyebrow">STEP 1 / 3</div>
+        <h1 class="topbar__title" id="viewTitle">Projects</h1>
+        <p class="topbar__subtitle" id="viewSubtitle">Connect a repository, then build its map and review changes.</p>
+      </header>
+
+      <div class="content">
+        <!-- ---------------------------- PROJECTS ---------------------------- -->
+        <section class="view" data-view="projects">
+          <div class="panel">
+            <div class="panel__head">
+              <h2 class="panel__title">Connect a repository</h2>
+              <p class="panel__hint">
+                Paste the URL of a public GitHub repository. It's cloned locally and read-only —
+                no credentials, no write access.
+              </p>
+            </div>
+            <form class="connect" id="connectForm">
+              <input
+                class="input mono"
+                id="repoUrl"
+                type="text"
+                placeholder="https://github.com/owner/repo"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button class="btn btn--primary" id="connectBtn" type="submit">Connect</button>
+            </form>
+            <p class="form-error" id="connectError" hidden></p>
+          </div>
+
+          <div class="panel">
+            <div class="panel__head panel__head--row">
+              <h2 class="panel__title">Tracked projects</h2>
+              <span class="counter mono" id="projectCount">0</span>
+            </div>
+            <div class="project-list" id="projectList"></div>
+            <div class="empty" id="projectEmpty" hidden>
+              <div class="empty__glyph mono">{ }</div>
+              <p class="empty__title">No projects yet</p>
+              <p class="empty__text">Connect a public GitHub repository above to start reviewing.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ------------------------------ MAP ------------------------------- -->
+        <section class="view" data-view="map" hidden>
+          <div class="context-bar" id="mapContext"></div>
+          <div class="panel">
+            <div class="panel__head">
+              <h2 class="panel__title">Project map</h2>
+              <p class="panel__hint">
+                The map records what each module is responsible for and the architectural invariants
+                a change is checked against. Build it once per project.
+              </p>
+            </div>
+            <div class="map-state" id="mapState"></div>
+          </div>
+        </section>
+
+        <!-- ----------------------------- REVIEW ----------------------------- -->
+        <section class="view" data-view="review" hidden>
+          <div class="context-bar" id="reviewContext"></div>
+          <div class="panel">
+            <div class="panel__head">
+              <h2 class="panel__title">Compare branches</h2>
+              <p class="panel__hint">
+                Pick a base and a compare branch. The change is computed as
+                <span class="mono strong">git diff base...compare</span> — what the compare branch
+                introduced since it forked.
+              </p>
+            </div>
+            <div class="compare-bar">
+              <div class="field">
+                <label class="field__label" for="baseSelect">Base</label>
+                <select class="select mono" id="baseSelect"></select>
+              </div>
+              <div class="compare-arrow mono" aria-hidden="true">...</div>
+              <div class="field">
+                <label class="field__label" for="compareSelect">Compare</label>
+                <select class="select mono" id="compareSelect"></select>
+              </div>
+              <button class="btn btn--primary" id="compareBtn" type="button">Compare</button>
+            </div>
+            <p class="form-error" id="compareError" hidden></p>
+          </div>
+
+          <div class="panel" id="resultPanel" hidden>
+            <div class="stats" id="diffStats"></div>
+            <div class="file-summary" id="fileSummary"></div>
+            <div class="diff-view" id="diffView"></div>
+            <div class="empty" id="diffEmpty" hidden>
+              <div class="empty__glyph mono">≡</div>
+              <p class="empty__title">No differences</p>
+              <p class="empty__text">These branches are identical since their merge-base.</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="client.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
