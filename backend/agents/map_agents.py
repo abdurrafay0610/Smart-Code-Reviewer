@@ -2,23 +2,25 @@
 The map "climb" LLM rungs (Design §7.2).
 
 Where the review agents (``review_agents.py``) interpret evidence for the UI,
-these three build the *map itself* — and they obey the same two principles:
-principle #1 (the model is only for judgement; trees, languages, and imports are
-already computed deterministically in ``source_scan``) and principle #2 (one
-bounded decision per call). Each rung subclasses ``BaseAgent`` so every model
-call still funnels through ``query_deepseek``.
+these build the *map itself* — obeying the same two principles: the model is only
+for judgement (trees, languages, imports, and now the module dependency graph are
+computed deterministically), and one bounded decision per call.
 
 The rungs, each consuming the *verified* output of the one below:
 
-    ResponsibilityAgent   one file  -> one-line responsibility        (rung 2b)
-    ArchitectureAgent     role table -> layers/modules/deps + prose   (rung 3)
-    InvariantAgent        architecture -> candidate invariants        (rung 4)
+    ResponsibilityAgent    one file  -> one-line responsibility        (rung 2b)
+    ArchitectureAgent      roles + dep graph -> layers/modules         (rung 3a)
+    ArchitectureProseAgent structure -> human-readable prose           (rung 3b)
+    InvariantAgent         structure -> candidate invariants           (rung 4)
 
-Grounding is enforced in every prompt: describe only what the inputs show, never
-invent a file, module, or dependency. Rung 3 reads the *role table* (a compact
-digest of rung 2), not raw source, which keeps the one genuine synthesis call
-in-window and rooted in verified facts. Rung 4's output is explicitly a set of
-*candidates* — a human ratifies them (§7.3) before drift ever cites them.
+Rung 3 is deliberately split. The dependency graph is now supplied as ground
+truth (``module_graph``), so the model no longer infers it from every file's
+imports — it only names the layers and judges their direction. That, plus
+splitting the prose into its own call, keeps each call's input *and* output
+small, which is what stops a single call from exhausting the token budget
+(reasoning tokens count against ``max_tokens``, so a big synthesis call with
+thinking on can spend the whole budget before it answers). Rung 4 likewise reads
+the compact structure, not the imports-laden file table.
 """
 
 from __future__ import annotations
@@ -42,8 +44,45 @@ def _clip(source: str) -> str:
     return source[:_MAX_SOURCE_CHARS] + "\n… [truncated]"
 
 
+def _roles_for_prompt(file_roles: list[dict]) -> list[dict]:
+    """A compact role table for the synthesis rungs: path + language + role only.
+
+    Per-file imports are deliberately dropped here — the module dependency graph
+    now carries the dependency information in a far smaller form.
+    """
+    return [
+        {
+            "path": r.get("path", ""),
+            "language": r.get("language", ""),
+            "responsibility": r.get("responsibility", ""),
+        }
+        for r in file_roles
+    ]
+
+
+def _graph_for_prompt(graph: dict) -> dict:
+    """Slim the dependency graph for a prompt: module *names* + edges only.
+
+    The per-module file lists duplicate the paths already in the role table, so
+    they're dropped from the prompt (the full graph is still stored on disk).
+    """
+    return {
+        "modules": [m.get("name", "") for m in graph.get("modules", [])],
+        "edges": graph.get("edges", []),
+    }
+
+
+def _architecture_for_prompt(architecture: dict) -> dict:
+    """Slim the assembled architecture the same way (module names, not paths)."""
+    return {
+        "layers": architecture.get("layers", []),
+        "modules": [m.get("name", "") for m in architecture.get("modules", [])],
+        "dependencies": architecture.get("dependencies", []),
+    }
+
+
 # ============================================================================ #
-# Rung 2b — per-file responsibility
+# Rung 2b — per-file responsibility (unchanged)
 # ============================================================================ #
 @dataclass(frozen=True, slots=True)
 class ResponsibilityInput:
@@ -107,46 +146,178 @@ class ResponsibilityAgent(BaseAgent[ResponsibilityInput, FileRole]):
                 raw_content=response.content,
             )
         responsibility = str(obj.get("responsibility", "")).strip()
-        # path/language are ours (deterministic), not the model's — we only take
-        # the responsibility from it. imports live on the on-disk record, not the
-        # FileRole dataclass, so they're re-attached by the orchestrator.
-        return FileRole(
-            path="",  # filled in by the caller, which knows the file
-            language="",
-            responsibility=responsibility,
-        )
+        # path/language are ours (deterministic); we only take the responsibility.
+        return FileRole(path="", language="", responsibility=responsibility)
 
 
 # ============================================================================ #
-# Rung 3 — architecture inference (the one genuine synthesis call)
+# Rung 3a — architecture STRUCTURE (dependencies supplied deterministically)
 # ============================================================================ #
 @dataclass(frozen=True, slots=True)
-class ArchitectureResult:
-    """Rung 3 output: a prose description plus a structured architecture dict."""
+class ArchitectureStructure:
+    """Rung 3a output: the inferred layers. Modules + dependencies are attached
+    deterministically by the orchestrator, so the model never emits them."""
 
-    prose: str
-    architecture: dict
+    layers: list
 
 
 @dataclass(frozen=True, slots=True)
 class ArchitectureInput:
-    """The role table (rung 2 output) — the only thing rung 3 reads.
+    """What rung 3a reads: a compact role table + the deterministic dep graph.
 
-    Each entry is ``{path, language, responsibility, imports}``. No raw source:
-    the digest is what keeps this synthesis call in-window and grounded.
+    No raw source and no per-file imports — the graph carries the dependency
+    facts, so this call's input stays small and it reasons much less.
     """
 
     file_roles: list[dict]
+    dependency_graph: dict  # {"modules": [...], "edges": [...]} from module_graph
 
 
-class ArchitectureAgent(BaseAgent[ArchitectureInput, ArchitectureResult]):
-    """Role table in, inferred architecture + prose out (rung 3).
+class ArchitectureAgent(BaseAgent[ArchitectureInput, ArchitectureStructure]):
+    """Roles + dependency graph in, named layers out (rung 3a).
 
-    This is the hard reasoning step, so it uses the strong model with thinking
-    on and a larger budget.
+    The dependencies are given, so the model only groups modules into layers and
+    judges the layering direction — a much smaller job than before. Kept on the
+    strong model with thinking on, but with generous output headroom so reasoning
+    can't starve the answer.
     """
 
     name = "map-architecture"
+
+    def __init__(self, **kwargs: object) -> None:
+        kwargs.setdefault("model", "deepseek-v4-pro")
+        kwargs.setdefault("thinking", True)
+        kwargs.setdefault("max_tokens", 8192)
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+
+    def system_prompt(self) -> str:
+        return (
+            "You are a software architect. You are given a codebase as a compact "
+            "table of per-file roles and a MODULE DEPENDENCY GRAPH that has "
+            "already been computed for you (its edges are facts, not guesses — "
+            "each is a real import from one module to another).\n\n"
+            "Your one job: group the modules into architectural LAYERS and "
+            "characterise them. Do NOT recompute dependencies — they are given.\n\n"
+            "Rules:\n"
+            "- Use ONLY the provided modules and edges. Every layer must be made "
+            "of modules that appear in the graph; never invent modules.\n"
+            "- A layer is a set of modules with a shared architectural role "
+            "(e.g. a 'services' layer, an 'agents/LLM' layer). Give each a short "
+            "name, a one-line responsibility, and the modules it contains.\n"
+            "- Note the overall dependency direction the edges imply (which "
+            "layers depend on which).\n\n"
+            "Return ONLY JSON:\n"
+            "{\n"
+            '  "layers": [\n'
+            '    {"name": "<layer>", "responsibility": "<one line>", '
+            '"modules": ["<module name from the graph>"],\n'
+            '     "depends_on": ["<layer this layer depends on>"]}\n'
+            "  ]\n"
+            "}"
+        )
+
+    def build_user_input(self, payload: ArchitectureInput) -> str:
+        return (
+            "module dependency graph (JSON, edges are FACTS):\n"
+            f"{json.dumps(_graph_for_prompt(payload.dependency_graph), indent=2)}\n\n"
+            "per-file roles (JSON):\n"
+            f"{json.dumps(_roles_for_prompt(payload.file_roles), indent=2)}"
+        )
+
+    def parse_payload(
+        self, obj: object, response: DeepSeekResponse
+    ) -> ArchitectureStructure:
+        if not isinstance(obj, dict) or not isinstance(obj.get("layers"), list):
+            raise AgentResponseError(
+                'architecture response missing "layers" array',
+                raw_content=response.content,
+            )
+        return ArchitectureStructure(layers=obj["layers"])
+
+
+# ============================================================================ #
+# Rung 3b — architecture PROSE (its own small call)
+# ============================================================================ #
+@dataclass(frozen=True, slots=True)
+class ProseInput:
+    """What rung 3b reads: the assembled architecture + the compact role table."""
+
+    architecture: dict  # {"layers", "modules", "dependencies"}
+    file_roles: list[dict]
+
+
+class ArchitectureProseAgent(BaseAgent[ProseInput, str]):
+    """Assembled structure in, human-readable prose out (rung 3b).
+
+    Pure narration of an already-decided structure, so thinking is off and the
+    budget is modest — this call can't blow up the way the old combined call did.
+    """
+
+    name = "map-architecture-prose"
+
+    def __init__(self, **kwargs: object) -> None:
+        kwargs.setdefault("model", "deepseek-v4-pro")
+        kwargs.setdefault("thinking", False)
+        kwargs.setdefault("max_tokens", 2048)
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+
+    def system_prompt(self) -> str:
+        return (
+            "You are writing the human-readable overview for a project map. You "
+            "are given the codebase's architecture (layers, modules, and the "
+            "dependency edges between them) and a table of per-file roles.\n\n"
+            "Write a few short paragraphs describing how the codebase fits "
+            "together: the layers, the key modules, and how they relate.\n\n"
+            "Rules:\n"
+            "- Describe only what the inputs show. Do not invent modules or "
+            "relationships.\n"
+            "- Write for a human reviewer skimming the map — clear and concise, "
+            "not a bullet dump.\n\n"
+            'Return ONLY JSON: {"prose": "<a few short paragraphs>"}'
+        )
+
+    def build_user_input(self, payload: ProseInput) -> str:
+        return (
+            "architecture (JSON):\n"
+            f"{json.dumps(_architecture_for_prompt(payload.architecture), indent=2)}\n\n"
+            "per-file roles (JSON):\n"
+            f"{json.dumps(_roles_for_prompt(payload.file_roles), indent=2)}"
+        )
+
+    def parse_payload(self, obj: object, response: DeepSeekResponse) -> str:
+        if not isinstance(obj, dict):
+            raise AgentResponseError(
+                "prose response was not a JSON object",
+                raw_content=response.content,
+            )
+        return str(obj.get("prose", "")).strip()
+
+
+# ============================================================================ #
+# Rung 4 — candidate invariants (reads the compact structure, not the table)
+# ============================================================================ #
+@dataclass(frozen=True, slots=True)
+class InvariantInput:
+    """What rung 4 proposes rules from: the assembled architecture + roles.
+
+    The structured architecture (layers + modules + the dependency graph) gives
+    the concrete things a rule attaches to; the compact roles add responsibility
+    detail. No per-file imports — the graph already summarises dependencies.
+    """
+
+    architecture: dict
+    file_roles: list[dict]
+
+
+class InvariantAgent(BaseAgent[InvariantInput, list[Invariant]]):
+    """Architecture in, a small set of *candidate* invariants out (rung 4).
+
+    The output is deliberately unratified: a human approves/edits/rejects each
+    one (§7.3) before the drift check may cite it. Strong model + thinking on,
+    with output headroom.
+    """
+
+    name = "map-invariants"
 
     def __init__(self, **kwargs: object) -> None:
         kwargs.setdefault("model", "deepseek-v4-pro")
@@ -156,103 +327,24 @@ class ArchitectureAgent(BaseAgent[ArchitectureInput, ArchitectureResult]):
 
     def system_prompt(self) -> str:
         return (
-            "You are a software architect inferring the structure of a codebase "
-            "from a table of per-file roles. Each row gives a file's path, "
-            "language, one-line responsibility, and the modules it imports. The "
-            "import edges reveal how files depend on one another.\n\n"
-            "Infer the codebase's layers/modules and how they relate, then "
-            "describe it.\n\n"
-            "Rules:\n"
-            "- Use ONLY the table. Every layer, module, and dependency you name "
-            "must be traceable to the paths, responsibilities, or imports given. "
-            "Never invent files or relationships.\n"
-            "- Group files into meaningful modules/layers by directory and by "
-            "responsibility; describe the dependency direction between them.\n"
-            "- The prose is for a human reviewer: the shape of the system, the "
-            "key modules, and how they fit together.\n\n"
-            "Return ONLY JSON with this shape:\n"
-            "{\n"
-            '  "prose": "<a few short paragraphs describing the architecture>",\n'
-            '  "layers": [{"name": "<layer>", "responsibility": "<what it does>", '
-            '"paths": ["<dir or file>"]}],\n'
-            '  "modules": [{"name": "<module>", "responsibility": "<what it does>", '
-            '"paths": ["<dir or file>"]}],\n'
-            '  "dependencies": [{"from": "<module>", "to": "<module>", '
-            '"via": "<why: e.g. imports>"}]\n'
-            "}"
-        )
-
-    def build_user_input(self, payload: ArchitectureInput) -> str:
-        return "file role table (JSON):\n" + json.dumps(payload.file_roles, indent=2)
-
-    def parse_payload(
-        self, obj: object, response: DeepSeekResponse
-    ) -> ArchitectureResult:
-        if not isinstance(obj, dict):
-            raise AgentResponseError(
-                "architecture response was not a JSON object",
-                raw_content=response.content,
-            )
-        prose = str(obj.get("prose", "")).strip()
-        architecture = {
-            "layers": obj.get("layers", []),
-            "modules": obj.get("modules", []),
-            "dependencies": obj.get("dependencies", []),
-        }
-        return ArchitectureResult(prose=prose, architecture=architecture)
-
-
-# ============================================================================ #
-# Rung 4 — candidate invariants
-# ============================================================================ #
-@dataclass(frozen=True, slots=True)
-class InvariantInput:
-    """What rung 4 proposes rules from: the inferred architecture + role table.
-
-    Prose gives the intent; the structured architecture and roles give the
-    concrete modules a rule can be attached to.
-    """
-
-    prose: str
-    architecture: dict
-    file_roles: list[dict]
-
-
-class InvariantAgent(BaseAgent[InvariantInput, list[Invariant]]):
-    """Architecture in, a small set of *candidate* invariants out (rung 4).
-
-    The output is deliberately unratified: a human approves/edits/rejects each
-    one (§7.3) before the drift check may cite it. Careful rule proposal, so
-    strong model + thinking on.
-    """
-
-    name = "map-invariants"
-
-    def __init__(self, **kwargs: object) -> None:
-        kwargs.setdefault("model", "deepseek-v4-pro")
-        kwargs.setdefault("thinking", True)
-        kwargs.setdefault("max_tokens", 2048)
-        super().__init__(**kwargs)  # type: ignore[arg-type]
-
-    def system_prompt(self) -> str:
-        return (
             "You are a staff engineer proposing architectural INVARIANTS for a "
-            "codebase — a small set of explicit, checkable rules that capture how "
-            "the code is meant to fit together. A later automated check will cite "
+            "codebase — a small set of explicit, checkable rules capturing how "
+            "the code is meant to fit together. A later automated check cites "
             "these by name against incoming changes, so each must be concrete "
             "enough to test a diff against.\n\n"
-            "Good invariants are things like: layering/dependency rules "
-            "(\"ui/ may depend on core/, never the reverse\"), I/O ownership "
-            "(\"only net/ performs network I/O\"), per-module responsibility "
-            "(\"parser/ does tokens->AST, no I/O\"), and naming/ownership "
-            "conventions.\n\n"
+            "You are given the codebase's architecture (layers, modules, and the "
+            "dependency edges between them) plus per-file roles.\n\n"
+            "Good invariants: layering/dependency rules (\"ui/ may depend on "
+            "core/, never the reverse\"), I/O ownership (\"only net/ performs "
+            "network I/O\"), per-module responsibility (\"parser/ does "
+            "tokens->AST, no I/O\"), naming/ownership conventions.\n\n"
             "Rules:\n"
             "- Propose FEW, STRONG rules (roughly 3-8). A plausible-but-wrong "
             "invariant is worse than none, because it will fail good code.\n"
-            "- Ground every rule in the provided architecture and roles. Only "
-            "reference modules/layers that appear in the inputs.\n"
-            "- Each rule gets a short stable id (kebab-case), the rule itself in "
-            "one sentence, and a one-line rationale.\n"
+            "- Ground every rule in the provided architecture. Only reference "
+            "modules/layers that appear in the inputs.\n"
+            "- Each rule gets a short stable kebab-case id, the rule in one "
+            "sentence, and a one-line rationale.\n"
             "- These are CANDIDATES for human review; prefer rules a reviewer can "
             "clearly accept or reject.\n\n"
             "Return ONLY JSON:\n"
@@ -262,12 +354,10 @@ class InvariantAgent(BaseAgent[InvariantInput, list[Invariant]]):
 
     def build_user_input(self, payload: InvariantInput) -> str:
         return (
-            "architecture prose:\n"
-            f"{payload.prose}\n\n"
             "architecture (JSON):\n"
-            f"{json.dumps(payload.architecture, indent=2)}\n\n"
-            "file role table (JSON):\n"
-            f"{json.dumps(payload.file_roles, indent=2)}"
+            f"{json.dumps(_architecture_for_prompt(payload.architecture), indent=2)}\n\n"
+            "per-file roles (JSON):\n"
+            f"{json.dumps(_roles_for_prompt(payload.file_roles), indent=2)}"
         )
 
     def parse_payload(

@@ -11,17 +11,21 @@ compound and a wrong result is traceable to the rung that produced it.
 Deterministic rungs do as much as possible; the model is invoked only for
 genuine judgement, one bounded decision per call.
 
-    rung 1  file_tree      git ls-files                         deterministic
-    rung 2a file_index     language + imports (source_scan)     deterministic
-    rung 2b file_roles     per-file responsibility              LLM, 1 call/file
-    rung 3  architecture   layers/modules/deps + prose          LLM, 1 synthesis
-    rung 4  invariants     candidate rules (ratified: false)    LLM, 1 call
+    rung 1  file_tree      git ls-files                          deterministic
+    rung 2a file_index     language + imports (source_scan)      deterministic
+    rung 2b file_roles     per-file responsibility               LLM, 1 call/file
+    rung 2c dep_graph      module dependency graph (module_graph) deterministic
+    rung 3a layers         group modules into layers (deps given) LLM, 1 call
+    rung 3b prose          human-readable narrative               LLM, 1 call
+    rung 4  invariants     candidate rules (ratified: false)      LLM, 1 call
 
-Each rung is also persisted as its own artifact under ``data/maps/<id>/`` (so
-the climb is inspectable and a single rung is re-runnable), and the whole thing
-is assembled into ``map.json`` in the shape ``ProjectMap.from_dict`` expects —
-so the drift check and the map viewer read one file and don't care that it was
-built in stages.
+Rung 3 is split (structure vs prose) and reads the deterministic dependency
+graph rather than every file's imports, which keeps each model call's input and
+output small — the fix for a single call exhausting its token budget while
+thinking. Each rung is also persisted as its own artifact under
+``data/maps/<id>/`` (so the climb is inspectable and a single rung is
+re-runnable), and the whole thing is assembled into ``map.json`` in the shape
+``ProjectMap.from_dict`` expects.
 """
 
 from __future__ import annotations
@@ -35,12 +39,14 @@ from ..agents.deepseek_client import StepLogger
 from ..agents.map_agents import (
     ArchitectureAgent,
     ArchitectureInput,
+    ArchitectureProseAgent,
     InvariantAgent,
     InvariantInput,
+    ProseInput,
     ResponsibilityAgent,
     ResponsibilityInput,
 )
-from . import git_service, source_scan
+from . import git_service, module_graph, source_scan
 
 
 def map_dir_for(project_id: str) -> Path:
@@ -93,8 +99,8 @@ def build_map(
     ``project`` is the full storage record (it carries ``repo_path``).
     ``agent_kwargs`` (e.g. ``api_key=``, ``model=``, ``thinking=``) are forwarded
     to every rung's agent; omit them and each rung uses its own sensible default
-    (see ``map_agents``). This issues one model call per source file plus two,
-    so it requires a configured ``DEEPSEEK_API_KEY`` (or an explicit key).
+    (see ``map_agents``). The LLM rungs require a configured ``DEEPSEEK_API_KEY``
+    (or an explicit key); the deterministic rungs do not.
     """
     project_id = project["id"]
     repo = Path(project["repo_path"])
@@ -134,29 +140,40 @@ def build_map(
         )
     _write_artifact(out_dir, "03_file_roles.json", {"file_roles": file_roles})
 
-    # -- rung 3: architecture inference (LLM, the one synthesis call) ------- #
+    # -- rung 2c: module dependency graph (deterministic) ------------------ #
+    dependency_graph = module_graph.build_graph(file_index)
+    _write_artifact(out_dir, "04_dependency_graph.json", dependency_graph)
+
+    # -- rung 3a: layers (LLM; dependencies are GIVEN, not inferred) ------- #
     architecture_agent = ArchitectureAgent(logger=logger, **agent_kwargs)  # type: ignore[arg-type]
-    arch = architecture_agent.run(ArchitectureInput(file_roles=file_roles))
+    structure = architecture_agent.run(
+        ArchitectureInput(file_roles=file_roles, dependency_graph=dependency_graph)
+    )
+    # Assemble the architecture: layers from the model, modules + dependencies
+    # straight from the deterministic graph (the model never re-emits them).
+    architecture = {
+        "layers": structure.layers,
+        "modules": dependency_graph["modules"],
+        "dependencies": dependency_graph["edges"],
+    }
+
+    # -- rung 3b: prose (LLM; narration of the assembled structure) -------- #
+    prose_agent = ArchitectureProseAgent(logger=logger, **agent_kwargs)  # type: ignore[arg-type]
+    prose = prose_agent.run(ProseInput(architecture=architecture, file_roles=file_roles))
     _write_artifact(
-        out_dir,
-        "04_architecture.json",
-        {"prose": arch.prose, "architecture": arch.architecture},
+        out_dir, "05_architecture.json", {"prose": prose, "architecture": architecture}
     )
 
-    # -- rung 4: candidate invariants (LLM) -------------------------------- #
+    # -- rung 4: candidate invariants (LLM; reads the compact structure) --- #
     invariant_agent = InvariantAgent(logger=logger, **agent_kwargs)  # type: ignore[arg-type]
     candidates = invariant_agent.run(
-        InvariantInput(
-            prose=arch.prose,
-            architecture=arch.architecture,
-            file_roles=file_roles,
-        )
+        InvariantInput(architecture=architecture, file_roles=file_roles)
     )
     invariants = [
         {"id": c.id, "rule": c.rule, "rationale": c.rationale, "ratified": c.ratified}
         for c in candidates
     ]
-    _write_artifact(out_dir, "05_candidate_invariants.json", {"invariants": invariants})
+    _write_artifact(out_dir, "06_candidate_invariants.json", {"invariants": invariants})
 
     # -- assemble the final map.json (the shape ProjectMap.from_dict reads) - #
     result = _empty_scaffold(project_id)
@@ -164,10 +181,10 @@ def build_map(
         {
             "status": "built",  # invariants are candidates until §7.3 ratifies them
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "prose": arch.prose,
+            "prose": prose,
             "file_tree": file_tree,
             "file_roles": file_roles,
-            "architecture": arch.architecture,
+            "architecture": architecture,
             "invariants": invariants,
         }
     )
