@@ -90,8 +90,11 @@ class ReviewAgent(BaseAgent[ReviewInput, AgentResult]):
             else ""
         )
 
+        role = f"senior {self.language} engineer" if self.language else "senior software engineer"
+        # then: f"You are a {role} writing the {self.AXIS.upper()} section ..."
+
         return (
-            f"You are a senior software engineer writing the {self.AXIS.upper()} section "
+            f"You are a {role} writing the {self.AXIS.upper()} section "
             "of an automated pre-review, before a human opens a pull request.\n\n"
             "You are given, as JSON:\n"
             "  1. project_map — prose describing how this codebase is meant to fit "
@@ -264,6 +267,10 @@ class ReviewAgent(BaseAgent[ReviewInput, AgentResult]):
             total_tokens=response.total_tokens,
         )
 
+    def __init__(self, *, language: str = "", **kwargs) -> None:
+        self.language = language
+        super().__init__(**kwargs)
+
 
 # ---------------------------------------------------------------------------- #
 # Concrete agents — one per axis (§5 tables define the owned signals)
@@ -278,9 +285,8 @@ class ReadabilityAgent(ReviewAgent):
     OWNED_SIGNALS = (
         "identifier naming",
         "magic numbers",
-        "missing braces",
         "redundant control flow (else-after-return, boolean simplification)",
-        "formatting drift (clang-format)",
+        "formatting drift",
     )
     ACCEPTS_DRIFT = False
 
@@ -310,8 +316,8 @@ class MaintainabilityAgent(ReviewAgent):
         "cost, and fold in any maintainability-related architectural drift."
     )
     OWNED_SIGNALS = (
-        "static-analysis warnings (cppcheck)",
-        "outdated idioms (modernize-*)",
+        "static-analysis warnings",
+        "outdated idioms (legacy syntax)",
         "code duplication",
         "composite maintainability index",
     )
@@ -324,7 +330,3 @@ REVIEW_AGENTS: dict[Axis, type[ReviewAgent]] = {
     "structure": StructureAgent,
     "maintainability": MaintainabilityAgent,
 }
-
-def __init__(self, *, language: str = "", **kwargs):
-    self.language = language
-    super().__init__(**kwargs)
