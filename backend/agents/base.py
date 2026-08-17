@@ -28,6 +28,7 @@ from typing import Any, Generic, TypeVar
 from .deepseek_client import (
     DEFAULT_MODEL,
     DEFAULT_TIMEOUT_SECONDS,
+    DeepSeekIncompleteResponseError,   # NEW
     DeepSeekModel,
     DeepSeekResponse,
     ReasoningEffort,
@@ -68,6 +69,10 @@ class BaseAgent(ABC, Generic[InputT, ResultT]):
         thinking: bool = True,
         reasoning_effort: ReasoningEffort = "high",
         max_tokens: int | None = 8192,
+        # When set (and max_tokens is a concrete int), a truncated call
+        # (finish_reason="length") is retried with the budget doubled, up to
+        # this ceiling. None disables escalation.
+        max_token_ceiling: int | None = None,  # NEW
         # JSON is the contract between the model and ``parse``; default it on and
         # request the provider's JSON mode to match.
         json_output: bool = True,
@@ -82,6 +87,7 @@ class BaseAgent(ABC, Generic[InputT, ResultT]):
         self.thinking = thinking
         self.reasoning_effort = reasoning_effort
         self.max_tokens = max_tokens
+        self.max_token_ceiling = max_token_ceiling  # NEW
         self.json_output = json_output
         self.api_key = api_key
         self.base_url = base_url
@@ -115,24 +121,58 @@ class BaseAgent(ABC, Generic[InputT, ResultT]):
 
     # ---- execution ---------------------------------------------------------
     def run(self, payload: InputT) -> ResultT:
-        """Build the messages, call DeepSeek once, and parse the result."""
-        response = query_deepseek(
-            self.logger,
-            user_input=self.build_user_input(payload),
-            system_prompt=self.system_prompt(),
-            model=self.model,
-            thinking=self.thinking,
-            reasoning_effort=self.reasoning_effort,
-            max_tokens=self.max_tokens,
-            response_format={"type": "json_object"} if self.json_output else None,
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
-            log_content=self.log_content,
-            log_context={"agent": self.name},
-        )
-        return self.parse(response)
+        """Build the messages, call DeepSeek once, and parse the result.
+
+        If the call fails because the model ran out of output budget
+        (``finish_reason="length"``) and a ``max_token_ceiling`` is set, the
+        budget is doubled and the call retried, up to the ceiling. This is a
+        safety net for the thinking-mode synthesis rungs, where reasoning can
+        eat a fixed budget — not a substitute for a sensibly sized start.
+        """
+        user_input = self.build_user_input(payload)
+        system_prompt = self.system_prompt()
+        budget = self.max_tokens
+        while True:
+            try:
+                response = query_deepseek(
+                    self.logger,
+                    user_input=user_input,
+                    system_prompt=system_prompt,
+                    model=self.model,
+                    thinking=self.thinking,
+                    reasoning_effort=self.reasoning_effort,
+                    max_tokens=budget,
+                    response_format={"type": "json_object"} if self.json_output else None,
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout_seconds=self.timeout_seconds,
+                    max_retries=self.max_retries,
+                    log_content=self.log_content,
+                    log_context={"agent": self.name},
+                )
+                return self.parse(response)
+            except DeepSeekIncompleteResponseError as exc:
+                # Only a hard output-budget truncation is worth retrying with a
+                # bigger budget; content filtering / other incomplete reasons
+                # won't be fixed by more tokens.
+                if exc.diagnostics.get("finish_reason") != "length":
+                    raise
+                next_budget = self._escalated_budget(budget)
+                if next_budget is None:
+                    raise
+                budget = next_budget
+
+    def _escalated_budget(self, current: int | None) -> int | None:
+        """Next (doubled) budget, or None if escalation is done/inapplicable.
+
+        Needs a concrete current budget AND a ceiling, and stops once the
+        ceiling is reached. ``current`` strictly increases toward a finite
+        ceiling, so the retry loop always terminates.
+        """
+        ceiling = self.max_token_ceiling
+        if ceiling is None or current is None or current >= ceiling:
+            return None
+        return min(current * 2, ceiling)
 
     # ---- helpers -----------------------------------------------------------
     @staticmethod

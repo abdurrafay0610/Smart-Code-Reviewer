@@ -112,6 +112,7 @@ class ResponsibilityAgent(BaseAgent[ResponsibilityInput, FileRole]):
         kwargs.setdefault("model", "deepseek-v4-flash")
         kwargs.setdefault("thinking", False)
         kwargs.setdefault("max_tokens", 512)
+        kwargs.setdefault("max_token_ceiling", 2048)
         super().__init__(**kwargs)  # type: ignore[arg-type]
 
     def system_prompt(self) -> str:
@@ -188,6 +189,7 @@ class ArchitectureAgent(BaseAgent[ArchitectureInput, ArchitectureStructure]):
         kwargs.setdefault("model", "deepseek-v4-pro")
         kwargs.setdefault("thinking", True)
         kwargs.setdefault("max_tokens", 8192)
+        kwargs.setdefault("max_token_ceiling", 32768)  # NEW: 8192 -> 16384 -> 32768
         super().__init__(**kwargs)  # type: ignore[arg-type]
 
     def system_prompt(self) -> str:
@@ -322,7 +324,8 @@ class InvariantAgent(BaseAgent[InvariantInput, list[Invariant]]):
     def __init__(self, **kwargs: object) -> None:
         kwargs.setdefault("model", "deepseek-v4-pro")
         kwargs.setdefault("thinking", True)
-        kwargs.setdefault("max_tokens", 4096)
+        kwargs.setdefault("max_tokens", 8192)  # was 2048
+        kwargs.setdefault("max_token_ceiling", 32768)  # NEW
         super().__init__(**kwargs)  # type: ignore[arg-type]
 
     def system_prompt(self) -> str:
